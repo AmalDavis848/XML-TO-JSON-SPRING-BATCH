@@ -1,0 +1,2 @@
+input.file=classpath:input.xml
+output.file=file:output.json

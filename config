@@ -1,0 +1,110 @@
+package com.example.RecordingXmltoJson.config;
+
+import com.example.RecordingXmltoJson.model.Recording;
+import com.example.RecordingXmltoJson.processor.RecordingItemProcessor;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.launch.support.RunIdIncrementer;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.item.ItemProcessor;
+import org.springframework.batch.item.ItemReader;
+import org.springframework.batch.item.ItemWriter;
+import org.springframework.batch.item.json.JacksonJsonObjectMarshaller;
+import org.springframework.batch.item.json.builder.JsonFileItemWriterBuilder;
+import org.springframework.batch.item.xml.StaxEventItemReader;
+import org.springframework.batch.item.xml.builder.StaxEventItemReaderBuilder;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.oxm.xstream.XStreamMarshaller;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+@EnableBatchProcessing
+public class BatchConfig {
+
+    private static final Logger logger = LoggerFactory.getLogger(BatchConfig.class);
+
+    @Value("${input.file}")
+    private String inputFile;
+
+    @Value("${output.file}")
+    private String outputFile;
+
+    @Bean
+    public StaxEventItemReader<Recording> staxEventItemReader() {
+        logger.info("Input file path: {}", inputFile);
+
+        Map<String, Class<?>> aliases = new HashMap<>();
+        aliases.put("RECORDING", Recording.class);
+
+        XStreamMarshaller unmarshaller = new XStreamMarshaller();
+        unmarshaller.setAliases(aliases);
+
+        StaxEventItemReader<Recording> reader = new StaxEventItemReader<>();
+        reader.setName("recordingReader");
+        reader.setResource(new FileSystemResource(inputFile));
+        reader.setFragmentRootElementName("RECORDING");
+        reader.setUnmarshaller(unmarshaller);
+
+        logger.info("Reader created: [{}]", reader);
+        return reader;
+    }
+
+    @Bean
+    public ItemReader<Recording> loggingItemReader(StaxEventItemReader<Recording> delegate) {
+        return new LoggingItemReader(delegate);
+    }
+
+    @Bean
+    public ItemProcessor<Recording, Recording> processor() {
+        ItemProcessor<Recording, Recording> processor = new RecordingItemProcessor();
+        logger.info("Processor created: [{}]", processor);
+        return processor;
+    }
+
+    @Bean
+    public ItemWriter<Recording> writer() {
+        ItemWriter<Recording> writer = new JsonFileItemWriterBuilder<Recording>()
+                .jsonObjectMarshaller(new JacksonJsonObjectMarshaller<>())
+                .resource(new FileSystemResource(outputFile))
+                .name("recordingJsonWriter")
+                .build();
+
+        logger.info("Writer created: [{}]", writer);
+        return writer;
+    }
+
+    @Bean
+    public Job importUserJob(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
+        Job job = new JobBuilder("importRecordingJob", jobRepository)
+                .incrementer(new RunIdIncrementer())
+                .start(step1(jobRepository, transactionManager))
+                .build();
+
+        logger.info("Job created: [{}]", job);
+        return job;
+    }
+
+    @Bean
+    public Step step1(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
+        Step step = new StepBuilder("step1", jobRepository)
+                .<Recording, Recording>chunk(10, transactionManager)
+                .reader(loggingItemReader(staxEventItemReader()))
+                .processor(processor())
+                .writer(writer())
+                .build();
+
+        logger.info("Step created: [{}]", step);
+        return step;
+    }
+}
